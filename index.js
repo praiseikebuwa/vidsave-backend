@@ -59,7 +59,7 @@ async function extractTikTok(url) {
   return null;
 }
 
-// 2. Instagram Extractor with Multi-Engine Pipeline
+// 2. Instagram Extractor with Multi-Engine Pipeline (Video & Photo/Carousel Support)
 async function extractInstagram(url) {
   const cleanUrl = url.split('?')[0];
 
@@ -82,10 +82,23 @@ async function extractInstagram(url) {
           return {
             success: true,
             platform: 'Instagram',
-            title: 'Instagram Content',
+            title: 'Instagram Video',
             author: '@Instagram Creator',
             thumbnail: thumbUrl || 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
             url: videoUrl
+          };
+        }
+      } else if (thumbMatch && thumbMatch[1]) {
+        const thumbUrl = thumbMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+        if (thumbUrl && thumbUrl !== url) {
+          return {
+            success: true,
+            platform: 'Instagram',
+            title: 'Instagram Photo',
+            author: '@Instagram Creator',
+            thumbnail: thumbUrl,
+            url: thumbUrl,
+            image_urls: [thumbUrl]
           };
         }
       }
@@ -103,16 +116,28 @@ async function extractInstagram(url) {
     });
     if (ddRes.status === 200 && ddRes.data) {
       const html = ddRes.data.toString();
-      const metaMatch = html.match(/<meta property="og:video" content="([^"]+)"/) ||
-                        html.match(/<meta property="og:video:secure_url" content="([^"]+)"/);
-      if (metaMatch && metaMatch[1] && metaMatch[1] !== url) {
+      const videoMatch = html.match(/<meta property="og:video" content="([^"]+)"/) ||
+                         html.match(/<meta property="og:video:secure_url" content="([^"]+)"/);
+      const imageMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
+
+      if (videoMatch && videoMatch[1] && videoMatch[1] !== url) {
         return {
           success: true,
           platform: 'Instagram',
-          title: 'Instagram Content',
+          title: 'Instagram Video',
           author: '@Instagram Creator',
-          thumbnail: 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
-          url: metaMatch[1]
+          thumbnail: imageMatch ? imageMatch[1] : 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+          url: videoMatch[1]
+        };
+      } else if (imageMatch && imageMatch[1] && imageMatch[1] !== url) {
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: 'Instagram Photo',
+          author: '@Instagram Creator',
+          thumbnail: imageMatch[1],
+          url: imageMatch[1],
+          image_urls: [imageMatch[1]]
         };
       }
     }
@@ -120,7 +145,49 @@ async function extractInstagram(url) {
     console.error('DDInstagram error:', err.message);
   }
 
-  // Engine 3: FastDL Public API Endpoint
+  // Engine 3: Direct OpenGraph Web Scraper (fallback for IG post links)
+  try {
+    const ogRes = await axios.get(cleanUrl, { headers: HTTP_HEADERS, timeout: 8000 });
+    if (ogRes.status === 200 && ogRes.data) {
+      const html = ogRes.data.toString();
+      const videoMatch = html.match(/<meta property="og:video" content="([^"]+)"/) ||
+                         html.match(/<meta property="og:video:secure_url" content="([^"]+)"/);
+      const imageMatch = html.match(/<meta property="og:image" content="([^"]+)"/) ||
+                         html.match(/<meta name="twitter:image" content="([^"]+)"/);
+      const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
+      const descMatch = html.match(/<meta property="og:description" content="([^"]+)"/) ||
+                        html.match(/<meta name="description" content="([^"]+)"/);
+
+      const title = titleMatch ? titleMatch[1].replace(/&quot;/g, '"') : 'Instagram Content';
+      const author = descMatch ? (descMatch[1].split(' ')[0] || '@Instagram Creator') : '@Instagram Creator';
+
+      if (videoMatch && videoMatch[1] && videoMatch[1] !== url) {
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: title,
+          author: author,
+          thumbnail: imageMatch ? imageMatch[1] : 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+          url: videoMatch[1]
+        };
+      } else if (imageMatch && imageMatch[1] && imageMatch[1] !== url) {
+        const imgUrl = imageMatch[1].replace(/&amp;/g, '&');
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: title,
+          author: author,
+          thumbnail: imgUrl,
+          url: imgUrl,
+          image_urls: [imgUrl]
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Instagram OpenGraph error:', err.message);
+  }
+
+  // Engine 4: FastDL Public API Endpoint
   try {
     const fastDlRes = await axios.post('https://v3.fastdl.app/api/convert', { url }, {
       headers: { 'Content-Type': 'application/json', 'User-Agent': HTTP_HEADERS['User-Agent'] },

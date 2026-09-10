@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const cheerio = require('cheerio');
 require('dotenv').config();
 
 const app = express();
@@ -11,8 +10,9 @@ app.use(cors());
 app.use(express.json());
 
 const HTTP_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'application/json, text/plain, */*'
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5'
 };
 
 // Health Check
@@ -20,7 +20,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'VidSave Media Extraction Backend',
-    version: '1.0.0',
+    version: '1.2.0',
     endpoints: {
       download: '/api/download?url=<MEDIA_URL>'
     }
@@ -31,7 +31,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
 
-// TikTok Extractor
+// 1. TikTok Extractor (TikWM)
 async function extractTikTok(url) {
   try {
     const response = await axios.get('https://www.tikwm.com/api/', {
@@ -59,36 +59,94 @@ async function extractTikTok(url) {
   return null;
 }
 
-// Instagram Extractor
+// 2. Instagram Extractor with Multi-Engine Pipeline
 async function extractInstagram(url) {
+  const cleanUrl = url.split('?')[0];
+
+  // Engine 1: Instagram Embed HTML Scraper
   try {
-    const cleanUrl = url.split('?')[0];
     const embedUrl = cleanUrl.endsWith('/') ? `${cleanUrl}embed/captioned/` : `${cleanUrl}/embed/captioned/`;
-    const response = await axios.get(embedUrl, { headers: HTTP_HEADERS, timeout: 10000 });
+    const response = await axios.get(embedUrl, { headers: HTTP_HEADERS, timeout: 8000 });
     if (response.status === 200 && response.data) {
       const html = response.data.toString();
-      const $ = cheerio.load(html);
-      const videoSrc = $('video.EmbeddedVideo').attr('src') || $('video').attr('src');
-      const imgSrc = $('img.EmbeddedMediaImage').attr('src') || $('img').attr('src');
+      const videoMatch = html.match(/class="EmbeddedVideo"[^>]*src="([^"]+)"/) ||
+                         html.match(/<video[^>]*src="([^"]+)"/) ||
+                         html.match(/"video_url":"([^"]+)"/);
+      const thumbMatch = html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/) ||
+                         html.match(/<img[^>]*src="([^"]+)"/);
 
-      if (videoSrc) {
+      if (videoMatch && videoMatch[1]) {
+        const videoUrl = videoMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+        if (videoUrl && videoUrl !== url) {
+          const thumbUrl = thumbMatch ? thumbMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '') : '';
+          return {
+            success: true,
+            platform: 'Instagram',
+            title: 'Instagram Content',
+            author: '@Instagram Creator',
+            thumbnail: thumbUrl || 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+            url: videoUrl
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Instagram embed error:', err.message);
+  }
+
+  // Engine 2: InstaFix / DDInstagram OpenGraph Proxy
+  try {
+    const target = url.replace('instagram.com', 'ddinstagram.com');
+    const ddRes = await axios.get(target, {
+      headers: { 'User-Agent': 'TelegramBot (like TwitterBot)', 'Accept': 'text/html' },
+      timeout: 8000
+    });
+    if (ddRes.status === 200 && ddRes.data) {
+      const html = ddRes.data.toString();
+      const metaMatch = html.match(/<meta property="og:video" content="([^"]+)"/) ||
+                        html.match(/<meta property="og:video:secure_url" content="([^"]+)"/);
+      if (metaMatch && metaMatch[1] && metaMatch[1] !== url) {
         return {
           success: true,
           platform: 'Instagram',
-          title: 'Instagram Post / Reel',
+          title: 'Instagram Content',
           author: '@Instagram Creator',
-          thumbnail: imgSrc || 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
-          url: videoSrc.replace(/\\u0026/g, '&')
+          thumbnail: 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+          url: metaMatch[1]
         };
       }
     }
   } catch (err) {
-    console.error('Instagram embed extraction error:', err.message);
+    console.error('DDInstagram error:', err.message);
   }
+
+  // Engine 3: FastDL Public API Endpoint
+  try {
+    const fastDlRes = await axios.post('https://v3.fastdl.app/api/convert', { url }, {
+      headers: { 'Content-Type': 'application/json', 'User-Agent': HTTP_HEADERS['User-Agent'] },
+      timeout: 8000
+    });
+    if (fastDlRes.data && fastDlRes.data.url && Array.isArray(fastDlRes.data.url) && fastDlRes.data.url.length > 0) {
+      const mediaItem = fastDlRes.data.url[0];
+      if (mediaItem && mediaItem.url && mediaItem.url !== url) {
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: 'Instagram Content',
+          author: '@Instagram Creator',
+          thumbnail: 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+          url: mediaItem.url
+        };
+      }
+    }
+  } catch (err) {
+    console.error('FastDL error:', err.message);
+  }
+
   return null;
 }
 
-// YouTube Extractor
+// 3. YouTube Extractor with Multi-Instance Cluster
 async function extractYouTube(url) {
   const ytRegExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/;
   const match = url.match(ytRegExp);
@@ -96,25 +154,54 @@ async function extractYouTube(url) {
   const thumbnail = videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : 'https://cdn-icons-png.flaticon.com/512/1384/1384060.png';
 
   if (videoId) {
+    // Engine 1: Invidious Instances Cluster
+    const invidiousInstances = [
+      `https://inv.tux.pizza/api/v1/videos/${videoId}`,
+      `https://invidious.nerdvpn.de/api/v1/videos/${videoId}`,
+      `https://invidious.drgns.space/api/v1/videos/${videoId}`
+    ];
+    for (const inst of invidiousInstances) {
+      try {
+        const res = await axios.get(inst, { headers: HTTP_HEADERS, timeout: 8000 });
+        if (res.status === 200 && res.data && res.data.formatStreams) {
+          const streams = res.data.formatStreams;
+          const bestStream = streams[streams.length - 1];
+          if (bestStream && bestStream.url) {
+            return {
+              success: true,
+              platform: 'YouTube',
+              title: res.data.title || 'YouTube Video',
+              author: res.data.author || 'YouTube Channel',
+              thumbnail: thumbnail,
+              url: bestStream.url
+            };
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Engine 2: Piped Instances Cluster
     const pipedInstances = [
       `https://api.piped.video/streams/${videoId}`,
       `https://pipedapi.kavin.rocks/streams/${videoId}`
     ];
     for (const inst of pipedInstances) {
       try {
-        const res = await axios.get(inst, { headers: HTTP_HEADERS, timeout: 10000 });
+        const res = await axios.get(inst, { headers: HTTP_HEADERS, timeout: 8000 });
         if (res.status === 200 && res.data && res.data.videoStreams) {
           const streams = res.data.videoStreams;
           const bestStream = streams.find(s => s.videoOnly === false) || streams[0];
-          return {
-            success: true,
-            platform: 'YouTube',
-            title: res.data.title || 'YouTube Video',
-            author: res.data.uploader || 'YouTube Creator',
-            thumbnail: res.data.thumbnailUrl || thumbnail,
-            url: bestStream.url,
-            audio_url: res.data.audioStreams && res.data.audioStreams.length ? res.data.audioStreams[0].url : null
-          };
+          if (bestStream && bestStream.url) {
+            return {
+              success: true,
+              platform: 'YouTube',
+              title: res.data.title || 'YouTube Video',
+              author: res.data.uploader || 'YouTube Creator',
+              thumbnail: res.data.thumbnailUrl || thumbnail,
+              url: bestStream.url,
+              audio_url: res.data.audioStreams && res.data.audioStreams.length ? res.data.audioStreams[0].url : null
+            };
+          }
         }
       } catch (_) {}
     }
@@ -122,7 +209,34 @@ async function extractYouTube(url) {
   return null;
 }
 
-// Multi-Instance Cobalt Extractor
+// 4. Facebook Extractor
+async function extractFacebook(url) {
+  try {
+    const res = await axios.get(url, { headers: HTTP_HEADERS, timeout: 8000 });
+    if (res.status === 200 && res.data) {
+      const html = res.data.toString();
+      const sdMatch = html.match(/sd_src\s*:\s*"([^"]+)"/) || html.match(/browser_native_sd_url\s*:\s*"([^"]+)"/);
+      const hdMatch = html.match(/hd_src\s*:\s*"([^"]+)"/) || html.match(/browser_native_hd_url\s*:\s*"([^"]+)"/);
+
+      const videoUrl = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
+      if (videoUrl) {
+        return {
+          success: true,
+          platform: 'Facebook',
+          title: 'Facebook Video',
+          author: 'Facebook Creator',
+          thumbnail: 'https://cdn-icons-png.flaticon.com/512/124/124010.png',
+          url: videoUrl.replace(/\\/g, '')
+        };
+      }
+    }
+  } catch (err) {
+    console.error('Facebook extraction error:', err.message);
+  }
+  return null;
+}
+
+// 5. Multi-Instance Cobalt Extractor Network
 async function extractCobalt(url, platformHint = 'Social Media') {
   const endpoints = [
     'https://co.wuk.sh/api/json',
@@ -132,13 +246,13 @@ async function extractCobalt(url, platformHint = 'Social Media') {
 
   for (const ep of endpoints) {
     try {
-      const res = await axios.post(ep, { url, vQuality: 'max' }, {
+      const res = await axios.post(ep, { url }, {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
           'User-Agent': HTTP_HEADERS['User-Agent']
         },
-        timeout: 12000
+        timeout: 10000
       });
 
       if (res.status === 200 && res.data) {
@@ -154,7 +268,7 @@ async function extractCobalt(url, platformHint = 'Social Media') {
             url: imageUrls[0],
             image_urls: imageUrls
           };
-        } else if (data.url || data.stream) {
+        } else if ((data.url || data.stream) && (data.url !== url && data.stream !== url)) {
           return {
             success: true,
             platform: platformHint,
@@ -184,6 +298,8 @@ async function handleDownloadRequest(req, res) {
     result = await extractInstagram(targetUrl);
   } else if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
     result = await extractYouTube(targetUrl);
+  } else if (targetUrl.includes('facebook.com') || targetUrl.includes('fb.watch')) {
+    result = await extractFacebook(targetUrl);
   }
 
   if (!result) {
@@ -197,18 +313,13 @@ async function handleDownloadRequest(req, res) {
     result = await extractCobalt(targetUrl, platform);
   }
 
-  if (result && result.url) {
+  if (result && result.url && result.url !== targetUrl) {
     return res.json(result);
   }
 
-  // Generic fallback response
-  return res.json({
-    success: true,
-    platform: 'Media',
-    title: 'Extracted Content',
-    author: 'Creator',
-    thumbnail: 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
-    url: targetUrl
+  return res.status(422).json({
+    success: false,
+    error: 'Could not extract direct media download URL for this link. Please check the URL or try another link.'
   });
 }
 
@@ -216,5 +327,5 @@ app.get('/api/download', handleDownloadRequest);
 app.post('/api/download', handleDownloadRequest);
 
 app.listen(PORT, () => {
-  console.log(`🚀 VidSave Backend Server running on port ${PORT}`);
+  console.log(`🚀 VidSave Backend Server v1.2.0 running on port ${PORT}`);
 });

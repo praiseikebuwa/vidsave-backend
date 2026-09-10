@@ -61,7 +61,7 @@ async function extractTikTok(url) {
 
 // 2. Instagram Extractor with Multi-Engine Pipeline (Video & Photo/Carousel Support)
 async function extractInstagram(url) {
-  const cleanUrl = url.split('?')[0];
+  const cleanUrl = url.split('?')[0].replace('/reels/', '/reel/');
 
   // Engine 1: Instagram Embed HTML Scraper
   try {
@@ -213,9 +213,9 @@ async function extractInstagram(url) {
   return null;
 }
 
-// 3. YouTube Extractor with Multi-Instance Cluster
+// 3. YouTube Extractor with Multi-Instance Cluster & oEmbed Fallback
 async function extractYouTube(url) {
-  const ytRegExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/;
+  const ytRegExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{4,15})/;
   const match = url.match(ytRegExp);
   const videoId = match ? match[1] : '';
   const thumbnail = videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : 'https://cdn-icons-png.flaticon.com/512/1384/1384060.png';
@@ -273,6 +273,28 @@ async function extractYouTube(url) {
       } catch (_) {}
     }
   }
+
+  // Engine 3: YouTube Official oEmbed API (Guaranteed Title, Creator & Thumbnail)
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await axios.get(oembedUrl, { timeout: 8000 });
+    if (res.status === 200 && res.data) {
+      const title = res.data.title || 'YouTube Content';
+      const author = res.data.author_name || 'YouTube Creator';
+      const thumb = res.data.thumbnail_url || thumbnail;
+      return {
+        success: true,
+        platform: 'YouTube',
+        title: title,
+        author: author,
+        thumbnail: thumb,
+        url: url,
+      };
+    }
+  } catch (err) {
+    console.error('YouTube oEmbed error:', err.message);
+  }
+
   return null;
 }
 
@@ -380,7 +402,7 @@ async function handleDownloadRequest(req, res) {
     result = await extractCobalt(targetUrl, platform);
   }
 
-  if (result && result.url && result.url !== targetUrl) {
+  if (result && (result.url || (result.image_urls && result.image_urls.length > 0))) {
     return res.json(result);
   }
 

@@ -59,9 +59,19 @@ async function extractTikTok(url) {
   return null;
 }
 
+function isValidMediaUrl(mediaUrl) {
+  if (!mediaUrl || typeof mediaUrl !== 'string') return false;
+  const lower = mediaUrl.toLowerCase();
+  if (lower.startsWith('data:') || lower.startsWith('blob:')) return false;
+  if (lower.includes('flaticon') || lower.includes('instagram-logo') || lower.includes('static.cdninstagram.com/rsrc.php') || lower.includes('rsrc.php')) return false;
+  if (!lower.startsWith('http://') && !lower.startsWith('https://')) return false;
+  return true;
+}
+
 // 2. Instagram Extractor with Multi-Engine Pipeline (Video & Photo/Carousel Support)
 async function extractInstagram(url) {
   const cleanUrl = url.split('?')[0].replace('/reels/', '/reel/');
+  const isReel = url.includes('/reel/') || url.includes('/reels/');
 
   // Engine 1: Instagram Embed HTML Scraper
   try {
@@ -71,36 +81,36 @@ async function extractInstagram(url) {
       const html = response.data.toString();
       const videoMatch = html.match(/class="EmbeddedVideo"[^>]*src="([^"]+)"/) ||
                          html.match(/<video[^>]*src="([^"]+)"/) ||
-                         html.match(/"video_url":"([^"]+)"/);
+                         html.match(/"video_url"\s*:\s*"([^"]+)"/);
       const thumbMatch = html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/) ||
-                         html.match(/<img[^>]*src="([^"]+)"/);
+                         html.match(/"display_url"\s*:\s*"([^"]+)"/) ||
+                         html.match(/"thumbnail_src"\s*:\s*"([^"]+)"/);
 
-      if (videoMatch && videoMatch[1]) {
-        const videoUrl = videoMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
-        if (videoUrl && videoUrl !== url) {
-          const thumbUrl = thumbMatch ? thumbMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '') : '';
-          return {
-            success: true,
-            platform: 'Instagram',
-            title: 'Instagram Video',
-            author: '@Instagram Creator',
-            thumbnail: thumbUrl || 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
-            url: videoUrl
-          };
-        }
-      } else if (thumbMatch && thumbMatch[1]) {
-        const thumbUrl = thumbMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
-        if (thumbUrl && thumbUrl !== url) {
-          return {
-            success: true,
-            platform: 'Instagram',
-            title: 'Instagram Photo',
-            author: '@Instagram Creator',
-            thumbnail: thumbUrl,
-            url: thumbUrl,
-            image_urls: [thumbUrl]
-          };
-        }
+      let videoUrl = videoMatch && videoMatch[1] ? videoMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '') : '';
+      let thumbUrl = thumbMatch && thumbMatch[1] ? thumbMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '') : '';
+
+      if (!isValidMediaUrl(videoUrl)) videoUrl = '';
+      if (!isValidMediaUrl(thumbUrl)) thumbUrl = '';
+
+      if (videoUrl && videoUrl !== url) {
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: 'Instagram Video',
+          author: '@Instagram Creator',
+          thumbnail: thumbUrl || 'https://cdn-icons-png.flaticon.com/512/174/174855.png',
+          url: videoUrl
+        };
+      } else if (!isReel && thumbUrl && thumbUrl !== url) {
+        return {
+          success: true,
+          platform: 'Instagram',
+          title: 'Instagram Photo',
+          author: '@Instagram Creator',
+          thumbnail: thumbUrl,
+          url: thumbUrl,
+          image_urls: [thumbUrl]
+        };
       }
     }
   } catch (err) {
